@@ -35,24 +35,46 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
 
-      - name: Verify known-good HEVC core is unchanged
+      - name: Restore persistent signing keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "Missing ANDROID_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo "Missing ANDROID_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$ANDROID_KEY_ALIAS" || { echo "Missing ANDROID_KEY_ALIAS secret"; exit 1; }
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/moonlight-hevc-keys.p12"
+          test -s "$RUNNER_TEMP/moonlight-hevc-keys.p12"
+
+      - name: Verify known-good HEVC core and v4 keyboard cleanup
         shell: bash
         run: |
           test "$(git hash-object app/src/main/java/com/limelight/binding/video/MediaCodecDecoderRenderer.java)" = "d24ec0dc721587382d2c68860543e43d8a820f89"
           test "$(git hash-object app/src/main/java/com/limelight/binding/video/MediaCodecHelper.java)" = "6e1dd6ce6162eb45d539708e08e87d5664fd20e3"
+          grep -q 'public static final int VK_PRINTSCREEN = 0x2C;' app/src/main/java/com/limelight/binding/input/KeyboardTranslator.java
+          ! grep -q 'ctrlAltActivityFallbackKeys' app/src/main/java/com/limelight/Game.java
+          ! grep -q 'isFunctionPressed()' app/src/main/java/com/limelight/Game.java
 
-      - name: Apply Print Screen compile fix
-        shell: bash
-        run: |
-          sed -i 's/getModifierState(event), 0);/getModifierState(event), (byte) 0);/g' app/src/main/java/com/limelight/Game.java
-
-      - name: Build APK
+      - name: Build persistently signed APK
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/moonlight-hevc-keys.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           chmod +x gradlew
           ./gradlew assembleNonRootDebug --no-daemon --stacktrace
 
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          APK="$(find app/build/outputs/apk/nonRoot/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$APK"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: moonlight-hevc-keys
+          name: moonlight-hevc-keys-v4
           path: app/build/outputs/apk/nonRoot/debug/*.apk
