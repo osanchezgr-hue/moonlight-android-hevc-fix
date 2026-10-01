@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.jcodec.codecs.h264.H264Utils;
@@ -28,6 +29,7 @@ import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaCodec.BufferInfo;
 import android.media.MediaCodec.CodecException;
+import android.net.TrafficStats;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -128,6 +130,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private int numVpsIn;
     private int numFramesIn;
     private int numFramesOut;
+    private long lastNetDataBytes;
 
     private MediaCodecInfo findAvcDecoder() {
         MediaCodecInfo decoder = MediaCodecHelper.findProbableSafeDecoder("video/avc", MediaCodecInfo.CodecProfileLevel.AVCProfileHigh);
@@ -990,51 +993,64 @@ lastCodecRenderTimeNanos = renderTimeNanos;
             return;
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            frameTimeNanos -= activity.getWindowManager().getDefaultDisplay().getAppVsyncOffsetNanos();
-        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                frameTimeNanos -= activity.getWindowManager().getDefaultDisplay().getAppVsyncOffsetNanos();
+            }
 
-        // Don't render unless a new frame is due. This prevents microstutter when streaming
-        // at a frame rate that doesn't match the display (such as 60 FPS on 120 Hz).
-        long actualFrameTimeDeltaNs = frameTimeNanos - lastRenderedFrameTimeNanos;
-        long expectedFrameTimeDeltaNs = 800000000 / refreshRate; // within 80% of the next frame
-        if (actualFrameTimeDeltaNs >= expectedFrameTimeDeltaNs) {
-            // Render up to one frame when in frame pacing mode.
-            //
-            // NB: Since the queue limit is 2, we won't starve the decoder of output buffers
-            // by holding onto them for too long. This also ensures we will have that 1 extra
-            // frame of buffer to smooth over network/rendering jitter.
-            Integer nextOutputBuffer = outputBufferQueue.poll();
-            if (nextOutputBuffer != null) {
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        videoDecoder.releaseOutputBuffer(nextOutputBuffer, frameTimeNanos);
-                    }
-                    else {
-                        videoDecoder.releaseOutputBuffer(nextOutputBuffer, true);
-                    }
-
-                    lastRenderedFrameTimeNanos = frameTimeNanos;
-                    activeWindowVideoStats.totalFramesRendered++;
-                } catch (IllegalStateException ignored) {
+            // Don't render unless a new frame is due. This prevents microstutter when streaming
+            // at a frame rate that doesn't match the display (such as 60 FPS on 120 Hz).
+            long actualFrameTimeDeltaNs = frameTimeNanos - lastRenderedFrameTimeNanos;
+            long expectedFrameTimeDeltaNs = 800000000 / refreshRate; // within 80% of the next frame
+            if (actualFrameTimeDeltaNs >= expectedFrameTimeDeltaNs) {
+                // Render up to one frame when in frame pacing mode.
+                //
+                // NB: Since the queue limit is 2, we won't starve the decoder of output buffers
+                // by holding onto them for too long. This also ensures we will have that 1 extra
+                // frame of buffer to smooth over network/rendering jitter.
+                Integer nextOutputBuffer = outputBufferQueue.poll();
+                if (nextOutputBuffer != null) {
                     try {
-                        // Try to avoid leaking the output buffer by releasing it without rendering
-                        videoDecoder.releaseOutputBuffer(nextOutputBuffer, false);
-                    } catch (IllegalStateException e) {
-                        // This will leak nextOutputBuffer, but there's really nothing else we can do
-                        e.printStackTrace();
-                        handleDecoderException(e);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            videoDecoder.releaseOutputBuffer(nextOutputBuffer, frameTimeNanos);
+                        }
+                        else {
+                            videoDecoder.releaseOutputBuffer(nextOutputBuffer, true);
+                        }
+
+                        lastRenderedFrameTimeNanos = frameTimeNanos;
+                        activeWindowVideoStats.totalFramesRendered++;
+                    } catch (IllegalStateException ignored) {
+                        try {
+                            // Try to avoid leaking the output buffer by releasing it without rendering
+                            videoDecoder.releaseOutputBuffer(nextOutputBuffer, false);
+                        } catch (IllegalStateException e) {
+                            // This will leak nextOutputBuffer, but there's really nothing else we can do
+                            e.printStackTrace();
+                            handleDecoderException(e);
+                        }
                     }
                 }
             }
+
+            // Attempt codec recovery even if we have nothing to render right now. Recovery can still
+            // be required even if the codec died before giving any output.
+            doCodecRecoveryIfRequired(CR_FLAG_CHOREOGRAPHER);
+        } catch (RendererException e) {
+            // RendererException indicates an unrecoverable decoder failure. The crashListener has
+            // already been notified when this was thrown, so rethrow it to preserve the original
+            // fatal-crash behavior instead of silently retrying forever.
+            throw e;
+        } catch (Exception e) {
+            // Catch any other unexpected exceptions to prevent the Choreographer callback chain
+            // from breaking due to transient/recoverable failures.
+            LimeLog.warning("Exception in doFrame: "+e.getMessage());
+            e.printStackTrace();
+        } finally {
+            // Request another callback for next frame
+            // This must always be called to maintain the callback chain, even if an exception occurred
+            Choreographer.getInstance().postFrameCallback(this);
         }
-
-        // Attempt codec recovery even if we have nothing to render right now. Recovery can still
-        // be required even if the codec died before giving any output.
-        doCodecRecoveryIfRequired(CR_FLAG_CHOREOGRAPHER);
-
-        // Request another callback for next frame
-        Choreographer.getInstance().postFrameCallback(this);
     }
 
     private void startChoreographerThread() {
@@ -1120,7 +1136,16 @@ lastCodecRenderTimeNanos = renderTimeNanos;
                                 // refresh rate).
                                 if (outputBufferQueue.size() == OUTPUT_BUFFER_QUEUE_LIMIT) {
                                     try {
-                                        videoDecoder.releaseOutputBuffer(outputBufferQueue.take(), false);
+                                        // Use poll with timeout to avoid blocking indefinitely if the consumer
+                                        // thread is not processing frames (which can happen with HEVC decoders).
+                                        // A 100ms timeout gives the Choreographer callback time to process frames.
+                                        // A null return here means some other consumer (the Choreographer
+                                        // callback) already drained the queue below the limit while we were
+                                        // waiting, so the queue already has room and it's safe to proceed.
+                                        Integer oldBuffer = outputBufferQueue.poll(100, TimeUnit.MILLISECONDS);
+                                        if (oldBuffer != null) {
+                                            videoDecoder.releaseOutputBuffer(oldBuffer, false);
+                                        }
                                     } catch (InterruptedException e) {
                                         // We're shutting down, so we can just drop this buffer on the floor
                                         // and it will be reclaimed when the codec is released.
@@ -1456,21 +1481,43 @@ lastCodecRenderTimeNanos = renderTimeNanos;
                 float decodeTimeMs = (float)lastTwo.decoderTimeMs / lastTwo.totalFramesReceived;
                 long rttInfo = MoonBridge.getEstimatedRttInfo();
                 StringBuilder sb = new StringBuilder();
-                sb.append(context.getString(R.string.perf_overlay_streamdetails, initialWidth + "x" + initialHeight, fps.totalFps)).append('\n');
-                sb.append(context.getString(R.string.perf_overlay_decoder, decoder)).append('\n');
-                sb.append(context.getString(R.string.perf_overlay_incomingfps, fps.receivedFps)).append('\n');
-                sb.append(context.getString(R.string.perf_overlay_renderingfps, fps.renderedFps)).append('\n');
-                sb.append(context.getString(R.string.perf_overlay_netdrops,
-                        (float)lastTwo.framesLost / lastTwo.totalFrames * 100)).append('\n');
-                sb.append(context.getString(R.string.perf_overlay_netlatency,
-                        (int)(rttInfo >> 32), (int)rttInfo)).append('\n');
-                if (lastTwo.framesWithHostProcessingLatency > 0) {
-                    sb.append(context.getString(R.string.perf_overlay_hostprocessinglatency,
-                            (float)lastTwo.minHostProcessingLatency / 10,
-                            (float)lastTwo.maxHostProcessingLatency / 10,
-                            (float)lastTwo.totalHostProcessingLatency / 10 / lastTwo.framesWithHostProcessingLatency)).append('\n');
+                if (prefs.enablePerfOverlayMini) {
+                    long rxBytes = TrafficStats.getUidRxBytes(Process.myUid());
+                    long txBytes = TrafficStats.getUidTxBytes(Process.myUid());
+                    if (rxBytes != TrafficStats.UNSUPPORTED && txBytes != TrafficStats.UNSUPPORTED) {
+                        long netDataBytes = rxBytes + txBytes;
+                        if (lastNetDataBytes != 0) {
+                            float kbPerSec = (netDataBytes - lastNetDataBytes) / 1024f;
+                            if (kbPerSec >= 1000f) {
+                                sb.append("BW: ").append(String.format("%.1f", kbPerSec / 1024f)).append(" M/s\n");
+                            }
+                            else {
+                                sb.append("BW: ").append(String.format("%.1f", kbPerSec)).append(" K/s\n");
+                            }
+                        }
+                        lastNetDataBytes = netDataBytes;
+                    }
+                    sb.append("PL: ").append(String.format("%.0f", (float)lastTwo.framesLost / lastTwo.totalFrames * 100)).append("%\n");
+                    sb.append("Net: ").append((int)(rttInfo >> 32)).append("ms | Dec: ").append(String.format("%.1f", decodeTimeMs)).append("ms\n");
+                    sb.append(String.format("%.2f", fps.totalFps)).append(" FPS");
                 }
-                sb.append(context.getString(R.string.perf_overlay_dectime, decodeTimeMs));
+                else {
+                    sb.append(context.getString(R.string.perf_overlay_streamdetails, initialWidth + "x" + initialHeight, fps.totalFps)).append('\n');
+                    sb.append(context.getString(R.string.perf_overlay_decoder, decoder)).append('\n');
+                    sb.append(context.getString(R.string.perf_overlay_incomingfps, fps.receivedFps)).append('\n');
+                    sb.append(context.getString(R.string.perf_overlay_renderingfps, fps.renderedFps)).append('\n');
+                    sb.append(context.getString(R.string.perf_overlay_netdrops,
+                            (float)lastTwo.framesLost / lastTwo.totalFrames * 100)).append('\n');
+                    sb.append(context.getString(R.string.perf_overlay_netlatency,
+                            (int)(rttInfo >> 32), (int)rttInfo)).append('\n');
+                    if (lastTwo.framesWithHostProcessingLatency > 0) {
+                        sb.append(context.getString(R.string.perf_overlay_hostprocessinglatency,
+                                (float)lastTwo.minHostProcessingLatency / 10,
+                                (float)lastTwo.maxHostProcessingLatency / 10,
+                                (float)lastTwo.totalHostProcessingLatency / 10 / lastTwo.framesWithHostProcessingLatency)).append('\n');
+                    }
+                    sb.append(context.getString(R.string.perf_overlay_dectime, decodeTimeMs));
+                }
                 perfListener.onPerfUpdate(sb.toString());
             }
 
