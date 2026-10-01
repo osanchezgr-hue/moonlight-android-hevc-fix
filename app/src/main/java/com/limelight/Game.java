@@ -181,6 +181,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_APP_HDR = "HDR";
     public static final String EXTRA_SERVER_CERT = "ServerCert";
 
+    public static volatile Game activeInstance = null;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -737,7 +739,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // We can't guarantee the state of modifiers keys which may have
         // lifted while focus was not on us. Clear the modifier state.
-        this.modifierFlags = 0;
+        if (!KeyInterceptorService.isServiceRunning || !prefConfig.keyboardInterceptor) {
+            this.modifierFlags = 0;
+        }
 
         // With Android native pointer capture, capture is lost when focus is lost,
         // so it must be requested again when focus is regained.
@@ -1027,6 +1031,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        if (KeyInterceptorService.instance != null) {
+            KeyInterceptorService.instance.updateKeyFiltering(false);
+        }
+
+        if (activeInstance == this) {
+            activeInstance = null;
+        }
+
         super.onDestroy();
 
         if (controllerHandler != null) {
@@ -1054,8 +1066,27 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        activeInstance = this;
+
+        if (prefConfig.keyboardInterceptor && !KeyInterceptorService.isServiceRunning) {
+            Toast.makeText(this, "Warning: Keyboard Interceptor is enabled in settings, but the Accessibility Service is not running. Please toggle it off/on in system Accessibility Settings.", Toast.LENGTH_LONG).show();
+        }
+
+        // Enable key filtering when stream begins
+        if (prefConfig.keyboardInterceptor && KeyInterceptorService.instance != null) {
+            KeyInterceptorService.instance.updateKeyFiltering(true);
+        }
+    }
+
+    @Override
     protected void onPause() {
         if (isFinishing()) {
+            if (activeInstance == this) {
+                activeInstance = null;
+            }
+
             // Stop any further input device notifications before we lose focus (and pointer capture)
             if (controllerHandler != null) {
                 controllerHandler.stop();
@@ -1070,6 +1101,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onStop() {
+        if (KeyInterceptorService.instance != null) {
+            KeyInterceptorService.instance.updateKeyFiltering(false);
+        }
+
         super.onStop();
 
         SpinnerDialog.closeDialogs(this);
@@ -1300,8 +1335,51 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return (byte) modifierFlags;
     }
 
+    public boolean isInputGrabbed() {
+        return grabbedInput;
+    }
+
+    public boolean isSessionActive() {
+        return grabbedInput && conn != null;
+    }
+
+    public void handleAccessibilityKeyEvent(KeyEvent event) {
+        if (conn == null) {
+            return;
+        }
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            handleKeyDown(event);
+        } else if (event.getAction() == KeyEvent.ACTION_UP) {
+            handleKeyUp(event);
+        }
+    }
+
+    private boolean isKeyboardKey(int keyCode) {
+        // Exclude gamepad buttons
+        if (keyCode >= KeyEvent.KEYCODE_BUTTON_A && keyCode <= KeyEvent.KEYCODE_BUTTON_16) return false;
+        if (keyCode >= KeyEvent.KEYCODE_BUTTON_L1 && keyCode <= KeyEvent.KEYCODE_BUTTON_MODE) return false;
+        if (keyCode >= KeyEvent.KEYCODE_DPAD_UP && keyCode <= KeyEvent.KEYCODE_DPAD_CENTER) return false;
+        
+        // Exclude system keys that the service does not consume
+        if (keyCode == KeyEvent.KEYCODE_POWER ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_MUTE ||
+            keyCode == KeyEvent.KEYCODE_HOME ||
+            keyCode == KeyEvent.KEYCODE_BACK) {
+            return false;
+        }
+        
+        return true;
+    }
+
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (KeyInterceptorService.isServiceRunning && prefConfig.keyboardInterceptor) {
+            if (isKeyboardKey(keyCode)) {
+                return true;
+            }
+        }
         return handleKeyDown(event) || super.onKeyDown(keyCode, event);
     }
 
@@ -1323,7 +1401,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // Send the right mouse button event if mouse back and forward
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
-            if (!prefConfig.mouseNavButtons) {
+            if (!prefConfig.mouseNavButtons && conn != null) {
                 conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
             }
 
@@ -1363,7 +1441,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // UTF-8 events don't auto-repeat on the host side.
                 int unicodeChar = event.getUnicodeChar();
                 if ((unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0) {
-                    conn.sendUtf8Text(""+(char)unicodeChar);
+                    if (conn != null) {
+                        conn.sendUtf8Text(""+(char)unicodeChar);
+                    }
                     return true;
                 }
 
@@ -1375,8 +1455,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return true;
             }
 
-            conn.sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
-                    keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+            if (conn != null) {
+                conn.sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
+                        keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+            }
         }
 
         return true;
@@ -1384,6 +1466,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (KeyInterceptorService.isServiceRunning && prefConfig.keyboardInterceptor) {
+            if (isKeyboardKey(keyCode)) {
+                return true;
+            }
+        }
         return handleKeyUp(event) || super.onKeyUp(keyCode, event);
     }
 
@@ -1439,8 +1526,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return (unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0;
             }
 
-            conn.sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
-                    keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+            if (conn != null) {
+                conn.sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
+                        keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+            }
         }
 
         return true;
