@@ -29,7 +29,8 @@ import android.view.WindowInsets;
 
 import com.limelight.LimeLog;
 import com.limelight.PcView;
-import com.limelight.R;\nimport com.limelight.KeyInterceptorService;
+import com.limelight.R;
+import com.limelight.KeyInterceptorService;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.UiHelper;
