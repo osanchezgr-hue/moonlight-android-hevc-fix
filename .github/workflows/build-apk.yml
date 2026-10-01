@@ -1,6 +1,8 @@
-name: Build patched Moonlight APK
+name: Build Moonlight HEVC+Keys APK
 
 on:
+  push:
+    branches: [ "hevc-keys" ]
   workflow_dispatch:
 
 jobs:
@@ -33,5 +35,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: moonlight-no-hevc-rfi
+          name: moonlight-hevc-keys
           path: app/build/outputs/apk/nonRoot/debug/*.apk
