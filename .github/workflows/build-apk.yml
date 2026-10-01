@@ -41,6 +41,11 @@ jobs:
           test "$(git hash-object app/src/main/java/com/limelight/binding/video/MediaCodecDecoderRenderer.java)" = "d24ec0dc721587382d2c68860543e43d8a820f89"
           test "$(git hash-object app/src/main/java/com/limelight/binding/video/MediaCodecHelper.java)" = "6e1dd6ce6162eb45d539708e08e87d5664fd20e3"
 
+      - name: Apply Print Screen compile fix
+        shell: bash
+        run: |
+          sed -i 's/getModifierState(event), 0);/getModifierState(event), (byte) 0);/g' app/src/main/java/com/limelight/Game.java
+
       - name: Build APK
         run: |
           chmod +x gradlew
