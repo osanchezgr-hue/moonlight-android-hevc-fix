@@ -86,7 +86,6 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Locale;
-import java.util.HashSet;
 
 
 public class Game extends Activity implements SurfaceHolder.Callback,
@@ -137,7 +136,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean cursorVisible = false;
     private boolean waitingForAllModifiersUp = false;
     private int specialKeyCode = KeyEvent.KEYCODE_UNKNOWN;
-    private final HashSet<Integer> ctrlAltActivityFallbackKeys = new HashSet<>();
     private StreamView streamView;
     private long lastAbsTouchUpTime = 0;
     private long lastAbsTouchDownTime = 0;
@@ -1377,25 +1375,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (KeyInterceptorService.isServiceRunning && prefConfig.keyboardInterceptor && isKeyboardKey(keyCode)) {
-            boolean isModifier = keyCode == KeyEvent.KEYCODE_CTRL_LEFT ||
-                    keyCode == KeyEvent.KEYCODE_CTRL_RIGHT ||
-                    keyCode == KeyEvent.KEYCODE_ALT_LEFT ||
-                    keyCode == KeyEvent.KEYCODE_ALT_RIGHT ||
-                    keyCode == KeyEvent.KEYCODE_SHIFT_LEFT ||
-                    keyCode == KeyEvent.KEYCODE_SHIFT_RIGHT ||
-                    keyCode == KeyEvent.KEYCODE_META_LEFT ||
-                    keyCode == KeyEvent.KEYCODE_META_RIGHT;
-            boolean ctrlAltActive = (modifierFlags & (KeyboardPacket.MODIFIER_CTRL | KeyboardPacket.MODIFIER_ALT)) ==
-                    (KeyboardPacket.MODIFIER_CTRL | KeyboardPacket.MODIFIER_ALT);
-
-            // Some Android TV builds bypass AccessibilityService for the non-modifier
-            // key in Ctrl+Alt+letter combinations. Allow that key through the Activity
-            // path while keeping Skylark's synthetic modifier-release protection.
-            if (ctrlAltActive && !isModifier) {
-                ctrlAltActivityFallbackKeys.add(keyCode);
-            }
-            else {
+        if (KeyInterceptorService.isServiceRunning && prefConfig.keyboardInterceptor) {
+            if (isKeyboardKey(keyCode)) {
                 return true;
             }
         }
@@ -1439,19 +1420,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Try the keyboard handler if it wasn't handled as a game controller
         if (!handled) {
-            // K400-family keyboards expose Print Screen as Fn+Backspace. If Android
-            // preserves the Fn meta state, translate it explicitly to Print Screen.
-            if (event.getKeyCode() == KeyEvent.KEYCODE_DEL && event.isFunctionPressed()) {
-                if (!grabbedInput) {
-                    return false;
-                }
-                if (event.getRepeatCount() == 0 && conn != null) {
-                    conn.sendKeyboardInput((short) KeyboardTranslator.VK_PRINTSCREEN,
-                            KeyboardPacket.KEY_DOWN, getModifierState(event), 0);
-                }
-                return true;
-            }
-
             // Let this method take duplicate key down events
             if (handleSpecialKeys(event.getKeyCode(), true)) {
                 return true;
@@ -1498,10 +1466,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
-        if (KeyInterceptorService.isServiceRunning && prefConfig.keyboardInterceptor && isKeyboardKey(keyCode)) {
-            // If key-down used the Ctrl+Alt Activity fallback, always let the matching
-            // key-up through too, even if the user released a modifier first.
-            if (!ctrlAltActivityFallbackKeys.remove(keyCode)) {
+        if (KeyInterceptorService.isServiceRunning && prefConfig.keyboardInterceptor) {
+            if (isKeyboardKey(keyCode)) {
                 return true;
             }
         }
@@ -1543,17 +1509,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Try the keyboard handler if it wasn't handled as a game controller
         if (!handled) {
-            if (event.getKeyCode() == KeyEvent.KEYCODE_DEL && event.isFunctionPressed()) {
-                if (!grabbedInput) {
-                    return false;
-                }
-                if (conn != null) {
-                    conn.sendKeyboardInput((short) KeyboardTranslator.VK_PRINTSCREEN,
-                            KeyboardPacket.KEY_UP, getModifierState(event), 0);
-                }
-                return true;
-            }
-
             if (handleSpecialKeys(event.getKeyCode(), false)) {
                 return true;
             }
