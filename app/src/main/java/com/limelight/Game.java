@@ -2424,18 +2424,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     String dialogText = getResources().getString(R.string.conn_error_msg) + " " + stage +" (error "+errorCode+")";
 
                     if (portFlags != 0) {
-                        dialogText += "
-
-" + getResources().getString(R.string.check_ports_msg) + "
-" +
-                                MoonBridge.stringifyPortFlags(portFlags, "
-");
+                        dialogText += "\n\n" + getResources().getString(R.string.check_ports_msg) + "\n" +
+                                MoonBridge.stringifyPortFlags(portFlags, "\n");
                     }
 
                     if (portTestResult != MoonBridge.ML_TEST_RESULT_INCONCLUSIVE && portTestResult != 0)  {
-                        dialogText += "
-
-" + getResources().getString(R.string.nettest_text_blocked);
+                        dialogText += "\n\n" + getResources().getString(R.string.nettest_text_blocked);
                     }
 
                     Dialog.displayDialog(Game.this, getResources().getString(R.string.conn_error_title), dialogText, true);
@@ -2505,21 +2499,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                     else {
                                         errorCodeString = Integer.toString(errorCode);
                                     }
-                                    message = getResources().getString(R.string.conn_terminated_msg) + "
-
-" +
+                                    message = getResources().getString(R.string.conn_terminated_msg) + "\n\n" +
                                             getResources().getString(R.string.error_code_prefix) + " " + errorCodeString;
                                     break;
                             }
                         }
 
                         if (portFlags != 0) {
-                            message += "
-
-" + getResources().getString(R.string.check_ports_msg) + "
-" +
-                                    MoonBridge.stringifyPortFlags(portFlags, "
-");
+                            message += "\n\n" + getResources().getString(R.string.check_ports_msg) + "\n" +
+                                    MoonBridge.stringifyPortFlags(portFlags, "\n");
                         }
 
                         Dialog.displayDialog(Game.this, getResources().getString(R.string.conn_terminated_title),
