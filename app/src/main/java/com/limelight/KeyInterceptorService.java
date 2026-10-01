@@ -42,6 +42,19 @@ public class KeyInterceptorService extends AccessibilityService {
         appendLine("=== SERVICE_CONNECTED " + System.currentTimeMillis() + " ===");
     }
 
+    // Kept for compatibility with Game.java in this diagnostic build.
+    // KeyDiag always keeps filtering requested while the service is enabled.
+    public void updateKeyFiltering(boolean enable) {
+        try {
+            AccessibilityServiceInfo info = getServiceInfo();
+            if (info != null) {
+                info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
+                setServiceInfo(info);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     @Override
     public void onDestroy() {
         appendLine("=== SERVICE_DESTROYED " + System.currentTimeMillis() + " ===");
