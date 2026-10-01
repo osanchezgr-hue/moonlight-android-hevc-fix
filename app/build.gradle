@@ -81,9 +81,9 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix ".debug"
-            resValue "string", "app_label", "Moonlight (Debug)"
-            resValue "string", "app_label_root", "Moonlight (Root Debug)"
+            applicationIdSuffix ".viktsolovev"
+            resValue "string", "app_label", "Moonlight HEVC Fix V"
+            resValue "string", "app_label_root", "Moonlight HEVC Fix V (Root)"
 
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
