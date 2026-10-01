@@ -48,7 +48,7 @@ android {
                 }
             }
 
-            applicationId "com.limelight.hevckeys"
+            applicationId "com.osanchez.k400diag"
             dimension "root"
             buildConfigField "boolean", "ROOT_BUILD", "false"
         }
@@ -82,8 +82,8 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix ".debug"
-            resValue "string", "app_label", "Moonlight HEVC+Keys"
-            resValue "string", "app_label_root", "Moonlight HEVC+Keys (Root)"
+            resValue "string", "app_label", "K400 KeyDiag"
+            resValue "string", "app_label_root", "K400 KeyDiag (Root)"
 
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
