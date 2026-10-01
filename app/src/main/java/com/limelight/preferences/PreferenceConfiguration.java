@@ -49,6 +49,8 @@ public class PreferenceConfiguration {
     private static final String ENABLE_HDR_PREF_STRING = "checkbox_enable_hdr";
     private static final String ENABLE_PIP_PREF_STRING = "checkbox_enable_pip";
     private static final String ENABLE_PERF_OVERLAY_STRING = "checkbox_enable_perf_overlay";
+    private static final String ENABLE_PERF_OVERLAY_MINI_STRING = "checkbox_enable_perf_overlay_mini";
+    private static final String ENABLE_ANDROID_TV_FORCE_GPU_COMPOSITION_STRING = "checkbox_enable_android_tv_force_gpu_composition";
     private static final String BIND_ALL_USB_STRING = "checkbox_usb_bind_all";
     private static final String MOUSE_EMULATION_STRING = "checkbox_mouse_emulation";
     private static final String ANALOG_SCROLLING_PREF_STRING = "analog_scrolling";
@@ -67,9 +69,9 @@ public class PreferenceConfiguration {
     private static final String FULL_RANGE_PREF_STRING = "checkbox_full_range";
     private static final String GAMEPAD_TOUCHPAD_AS_MOUSE_PREF_STRING = "checkbox_gamepad_touchpad_as_mouse";
     private static final String GAMEPAD_MOTION_SENSORS_PREF_STRING = "checkbox_gamepad_motion_sensors";
-    private static final String GAMEPAD_MOTION_FALLBACK_PREF_STRING = "checkbox_gamepad_motion_fallback";
+    private static final String GAMEPAD_MOTION_FALLBACK_PREF_STRING = "checkbox_gamepad_motion_fallback";\n    private static final String KEYBOARD_INTERCEPTOR_PREF_STRING = "checkbox_keyboard_interceptor";
 
-    static final String DEFAULT_RESOLUTION = "1280x720";
+    static final String DEFAULT_RESOLUTION = "1920x1080";
     static final String DEFAULT_FPS = "60";
     private static final boolean DEFAULT_STRETCH = false;
     private static final boolean DEFAULT_SOPS = true;
@@ -80,7 +82,7 @@ public class PreferenceConfiguration {
     public static final String DEFAULT_LANGUAGE = "default";
     private static final boolean DEFAULT_MULTI_CONTROLLER = true;
     private static final boolean DEFAULT_USB_DRIVER = true;
-    private static final String DEFAULT_VIDEO_FORMAT = "auto";
+    private static final String DEFAULT_VIDEO_FORMAT = "forceh265";
 
     private static final boolean ONSCREEN_CONTROLLER_DEFAULT = false;
     private static final boolean ONLY_L3_R3_DEFAULT = false;
@@ -88,6 +90,8 @@ public class PreferenceConfiguration {
     private static final boolean DEFAULT_ENABLE_HDR = false;
     private static final boolean DEFAULT_ENABLE_PIP = false;
     private static final boolean DEFAULT_ENABLE_PERF_OVERLAY = false;
+    private static final boolean DEFAULT_ENABLE_PERF_OVERLAY_MINI = false;
+    private static final boolean DEFAULT_ENABLE_ANDROID_TV_FORCE_GPU_COMPOSITION = true;
     private static final boolean DEFAULT_BIND_ALL_USB = false;
     private static final boolean DEFAULT_MOUSE_EMULATION = true;
     private static final String DEFAULT_ANALOG_STICK_FOR_SCROLLING = "right";
@@ -100,14 +104,14 @@ public class PreferenceConfiguration {
     private static final boolean DEFAULT_TOUCHSCREEN_TRACKPAD = true;
     private static final String DEFAULT_AUDIO_CONFIG = "2"; // Stereo
     private static final boolean DEFAULT_LATENCY_TOAST = false;
-    private static final String DEFAULT_FRAME_PACING = "latency";
+    private static final String DEFAULT_FRAME_PACING = "balanced";
     private static final boolean DEFAULT_ABSOLUTE_MOUSE_MODE = false;
     private static final boolean DEFAULT_ENABLE_AUDIO_FX = false;
     private static final boolean DEFAULT_REDUCE_REFRESH_RATE = false;
     private static final boolean DEFAULT_FULL_RANGE = false;
     private static final boolean DEFAULT_GAMEPAD_TOUCHPAD_AS_MOUSE = false;
     private static final boolean DEFAULT_GAMEPAD_MOTION_SENSORS = true;
-    private static final boolean DEFAULT_GAMEPAD_MOTION_FALLBACK = false;
+    private static final boolean DEFAULT_GAMEPAD_MOTION_FALLBACK = false;\n    private static final boolean DEFAULT_KEYBOARD_INTERCEPTOR = false;
 
     public static final int FRAME_PACING_MIN_LATENCY = 0;
     public static final int FRAME_PACING_BALANCED = 1;
@@ -127,7 +131,7 @@ public class PreferenceConfiguration {
     public FormatOption videoFormat;
     public int deadzonePercentage;
     public int oscOpacity;
-    public boolean stretchVideo, enableSops, playHostAudio, disableWarnings;
+    public boolean stretchVideo, enableSops, playHostAudio, disableWarnings;\n    public boolean keyboardInterceptor;
     public String language;
     public boolean smallIconMode, multiController, usbDriver, flipFaceButtons;
     public boolean onscreenController;
@@ -136,6 +140,8 @@ public class PreferenceConfiguration {
     public boolean enableHdr;
     public boolean enablePip;
     public boolean enablePerfOverlay;
+    public boolean enablePerfOverlayMini;
+    public boolean enableAndroidTvForceGpuComposition;
     public boolean enableLatencyToast;
     public boolean bindAllUsb;
     public boolean mouseEmulation;
@@ -584,6 +590,10 @@ public class PreferenceConfiguration {
         config.enableHdr = prefs.getBoolean(ENABLE_HDR_PREF_STRING, DEFAULT_ENABLE_HDR) && !isShieldAtvFirmwareWithBrokenHdr();
         config.enablePip = prefs.getBoolean(ENABLE_PIP_PREF_STRING, DEFAULT_ENABLE_PIP);
         config.enablePerfOverlay = prefs.getBoolean(ENABLE_PERF_OVERLAY_STRING, DEFAULT_ENABLE_PERF_OVERLAY);
+        config.enablePerfOverlayMini = prefs.getBoolean(ENABLE_PERF_OVERLAY_MINI_STRING, DEFAULT_ENABLE_PERF_OVERLAY_MINI);
+        config.enableAndroidTvForceGpuComposition = prefs.getBoolean(
+                ENABLE_ANDROID_TV_FORCE_GPU_COMPOSITION_STRING,
+                DEFAULT_ENABLE_ANDROID_TV_FORCE_GPU_COMPOSITION);
         config.bindAllUsb = prefs.getBoolean(BIND_ALL_USB_STRING, DEFAULT_BIND_ALL_USB);
         config.mouseEmulation = prefs.getBoolean(MOUSE_EMULATION_STRING, DEFAULT_MOUSE_EMULATION);
         config.mouseNavButtons = prefs.getBoolean(MOUSE_NAV_BUTTONS_STRING, DEFAULT_MOUSE_NAV_BUTTONS);
@@ -600,7 +610,7 @@ public class PreferenceConfiguration {
         config.fullRange = prefs.getBoolean(FULL_RANGE_PREF_STRING, DEFAULT_FULL_RANGE);
         config.gamepadTouchpadAsMouse = prefs.getBoolean(GAMEPAD_TOUCHPAD_AS_MOUSE_PREF_STRING, DEFAULT_GAMEPAD_TOUCHPAD_AS_MOUSE);
         config.gamepadMotionSensors = prefs.getBoolean(GAMEPAD_MOTION_SENSORS_PREF_STRING, DEFAULT_GAMEPAD_MOTION_SENSORS);
-        config.gamepadMotionSensorsFallbackToDevice = prefs.getBoolean(GAMEPAD_MOTION_FALLBACK_PREF_STRING, DEFAULT_GAMEPAD_MOTION_FALLBACK);
+        config.gamepadMotionSensorsFallbackToDevice = prefs.getBoolean(GAMEPAD_MOTION_FALLBACK_PREF_STRING, DEFAULT_GAMEPAD_MOTION_FALLBACK);\n        config.keyboardInterceptor = prefs.getBoolean(KEYBOARD_INTERCEPTOR_PREF_STRING, DEFAULT_KEYBOARD_INTERCEPTOR);
 
         return config;
     }
