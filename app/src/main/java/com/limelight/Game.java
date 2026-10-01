@@ -1340,11 +1340,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     public boolean isSessionActive() {
-        return grabbedInput && conn != null;
+        return grabbedInput && connected && conn != null;
     }
 
     public void handleAccessibilityKeyEvent(KeyEvent event) {
-        if (conn == null) {
+        if (!isSessionActive()) {
             return;
         }
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
@@ -1491,7 +1491,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // Send the right mouse button event if mouse back and forward
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
-            if (!prefConfig.mouseNavButtons) {
+            if (!prefConfig.mouseNavButtons && conn != null) {
                 conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
             }
 
@@ -2298,6 +2298,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void stopConnection() {
         if (connecting || connected) {
             connecting = connected = false;
+            modifierFlags = 0;
+            waitingForAllModifiersUp = false;
+            specialKeyCode = KeyEvent.KEYCODE_UNKNOWN;
             updatePipAutoEnter();
 
             controllerHandler.stop();
