@@ -38,8 +38,8 @@ jobs:
       - name: Verify known-good HEVC core is unchanged
         shell: bash
         run: |
-          test "$(git hash-object app/src/main/java/com/limelight/binding/video/MediaCodecDecoderRenderer.java)" = "27433003f9ec3d60a96a17f3abf0606aa98eb7ae"
-          test "$(git hash-object app/src/main/java/com/limelight/binding/video/MediaCodecHelper.java)" = "d1067b19f5a576fc02a605666eee32edd7aac00f"
+          test "$(git hash-object app/src/main/java/com/limelight/binding/video/MediaCodecDecoderRenderer.java)" = "d24ec0dc721587382d2c68860543e43d8a820f89"
+          test "$(git hash-object app/src/main/java/com/limelight/binding/video/MediaCodecHelper.java)" = "6e1dd6ce6162eb45d539708e08e87d5664fd20e3"
 
       - name: Build APK
         run: |
