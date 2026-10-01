@@ -11,8 +11,8 @@ android {
         minSdk 21
         targetSdk 34
 
-        versionName "12.1-hevc-keys.3"
-        versionCode = 317
+        versionName "12.1-hevc-keys.4"
+        versionCode = 318
 
         // Generate native debug symbols to allow Google Play to symbolicate our native crashes
         ndk.debugSymbolLevel = 'FULL'
@@ -79,8 +79,25 @@ android {
         }
     }
 
+    signingConfigs {
+        persistent {
+            def keystorePath = System.getenv("ANDROID_KEYSTORE_FILE")
+            if (keystorePath) {
+                storeFile file(keystorePath)
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                storeType "PKCS12"
+            }
+        }
+    }
+
     buildTypes {
         debug {
+            if (System.getenv("ANDROID_KEYSTORE_FILE")) {
+                signingConfig signingConfigs.persistent
+            }
+
             applicationIdSuffix ".debug"
             resValue "string", "app_label", "Moonlight HEVC+Keys"
             resValue "string", "app_label_root", "Moonlight HEVC+Keys (Root)"
