@@ -22,10 +22,19 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK packages
+      - name: Locate Android SDK manager and install packages
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found under $ANDROID_HOME/cmdline-tools"
+            find "$ANDROID_HOME" -maxdepth 4 -type f -name sdkmanager -print || true
+            exit 1
+          fi
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
 
       - name: Build APK
         run: |
