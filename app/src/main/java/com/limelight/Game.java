@@ -60,7 +60,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Rational;
+import android.view.Choreographer;
 import android.view.Display;
 import android.view.InputDevice;
 import android.view.KeyCharacterMap;
@@ -146,6 +149,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private TextView notificationOverlayView;
     private int requestedNotificationOverlayVisibility = View.GONE;
     private TextView performanceOverlayView;
+    private TextView performanceOverlayMiniView;
+    private TextView androidTvForceGpuCompositionView;
+    private boolean gpuCompositionToggle;
+    private boolean gpuCompositionTickerRunning;
+    private long gpuCompositionTickCounter;
+    private long lastGpuCompositionLogTimeMs;
 
     private MediaCodecDecoderRenderer decoderRenderer;
     private boolean reportedCrash;
@@ -179,7 +188,61 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_PC_UUID = "UUID";
     public static final String EXTRA_PC_NAME = "PcName";
     public static final String EXTRA_APP_HDR = "HDR";
-    public static final String EXTRA_SERVER_CERT = "ServerCert";
+    public static final String EXTRA_SERVER_CERT = "ServerCert";\n\n    public static volatile Game activeInstance = null;
+
+    private final Choreographer.FrameCallback forceGpuCompositionTick = new Choreographer.FrameCallback() {
+        @Override
+        public void doFrame(long frameTimeNanos) {
+            if (!gpuCompositionTickerRunning || androidTvForceGpuCompositionView == null) {
+                return;
+            }
+
+            gpuCompositionToggle = !gpuCompositionToggle;
+            androidTvForceGpuCompositionView.setText(gpuCompositionToggle ? "\u00b7" : ".");
+            androidTvForceGpuCompositionView.setAlpha(gpuCompositionToggle ? 0.99f : 1.0f);
+            androidTvForceGpuCompositionView.invalidate();
+
+            gpuCompositionTickCounter++;
+            long now = SystemClock.uptimeMillis();
+            if (now - lastGpuCompositionLogTimeMs >= 5000) {
+                LimeLog.info("Force GPU composition tick active: " + gpuCompositionTickCounter + " frames");
+                lastGpuCompositionLogTimeMs = now;
+            }
+
+            Choreographer.getInstance().postFrameCallback(this);
+        }
+    };
+
+    private void updateGpuCompositionTickerState() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    updateGpuCompositionTickerState();
+                }
+            });
+            return;
+        }
+
+        boolean shouldRun = prefConfig != null &&
+                prefConfig.enableAndroidTvForceGpuComposition &&
+                connected &&
+                !isHidingOverlays &&
+                androidTvForceGpuCompositionView != null;
+
+        if (shouldRun) {
+            if (!gpuCompositionTickerRunning) {
+                gpuCompositionTickerRunning = true;
+                gpuCompositionTickCounter = 0;
+                lastGpuCompositionLogTimeMs = SystemClock.uptimeMillis();
+                Choreographer.getInstance().postFrameCallback(forceGpuCompositionTick);
+            }
+        }
+        else if (gpuCompositionTickerRunning) {
+            gpuCompositionTickerRunning = false;
+            Choreographer.getInstance().removeFrameCallback(forceGpuCompositionTick);
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -271,6 +334,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         notificationOverlayView = findViewById(R.id.notificationOverlay);
 
         performanceOverlayView = findViewById(R.id.performanceOverlay);
+        performanceOverlayMiniView = findViewById(R.id.performanceOverlayMini);
+        androidTvForceGpuCompositionView = findViewById(R.id.androidTvForceGpuComposition);
 
         inputCaptureProvider = InputCaptureManager.getInputCaptureProvider(this, this);
 
@@ -370,7 +435,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Check if the user has enabled performance stats overlay
         if (prefConfig.enablePerfOverlay) {
-            performanceOverlayView.setVisibility(View.VISIBLE);
+            if (prefConfig.enablePerfOverlayMini) {
+                performanceOverlayMiniView.setVisibility(View.VISIBLE);
+                performanceOverlayView.setVisibility(View.GONE);
+            }
+            else {
+                performanceOverlayView.setVisibility(View.VISIBLE);
+                performanceOverlayMiniView.setVisibility(View.GONE);
+            }
+        }
+
+        if (prefConfig.enableAndroidTvForceGpuComposition) {
+            androidTvForceGpuCompositionView.setVisibility(View.VISIBLE);
+        }
+        else {
+            androidTvForceGpuCompositionView.setVisibility(View.GONE);
         }
 
         decoderRenderer = new MediaCodecDecoderRenderer(
@@ -596,7 +675,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
 
                 performanceOverlayView.setVisibility(View.GONE);
+                performanceOverlayMiniView.setVisibility(View.GONE);
                 notificationOverlayView.setVisibility(View.GONE);
+                androidTvForceGpuCompositionView.setVisibility(View.GONE);
+                updateGpuCompositionTickerState();
 
                 // Disable sensors while in PiP mode
                 controllerHandler.disableSensors();
@@ -614,10 +696,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
 
                 if (prefConfig.enablePerfOverlay) {
-                    performanceOverlayView.setVisibility(View.VISIBLE);
+                    if (prefConfig.enablePerfOverlayMini) {
+                        performanceOverlayMiniView.setVisibility(View.VISIBLE);
+                    }
+                    else {
+                        performanceOverlayView.setVisibility(View.VISIBLE);
+                    }
                 }
 
                 notificationOverlayView.setVisibility(requestedNotificationOverlayVisibility);
+
+                if (prefConfig.enableAndroidTvForceGpuComposition) {
+                    androidTvForceGpuCompositionView.setVisibility(View.VISIBLE);
+                }
+
+                updateGpuCompositionTickerState();
 
                 // Enable sensors again after exiting PiP
                 controllerHandler.enableSensors();
@@ -735,9 +828,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
 
-        // We can't guarantee the state of modifiers keys which may have
-        // lifted while focus was not on us. Clear the modifier state.
-        this.modifierFlags = 0;
+        // Preserve modifier state while the accessibility interceptor is active.
+        // Android can transiently move focus while Alt+Tab or Win shortcuts are held.
+        if (!KeyInterceptorService.isServiceRunning || !prefConfig.keyboardInterceptor) {
+            this.modifierFlags = 0;
+        }
 
         // With Android native pointer capture, capture is lost when focus is lost,
         // so it must be requested again when focus is regained.
@@ -1027,6 +1122,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        if (KeyInterceptorService.instance != null) {
+            KeyInterceptorService.instance.updateKeyFiltering(false);
+        }
+
+        if (activeInstance == this) {
+            activeInstance = null;
+        }
+
         super.onDestroy();
 
         if (controllerHandler != null) {
@@ -1049,8 +1152,27 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             unbindService(usbDriverServiceConnection);
         }
 
+        gpuCompositionTickerRunning = false;
+        Choreographer.getInstance().removeFrameCallback(forceGpuCompositionTick);
+
         // Destroy the capture provider
         inputCaptureProvider.destroy();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        activeInstance = this;
+
+        if (prefConfig.keyboardInterceptor && !KeyInterceptorService.isServiceRunning) {
+            Toast.makeText(this,
+                    "Keyboard Interceptor is enabled, but its Accessibility Service is not running. Enable it in Android Accessibility settings.",
+                    Toast.LENGTH_LONG).show();
+        }
+
+        if (prefConfig.keyboardInterceptor && KeyInterceptorService.instance != null) {
+            KeyInterceptorService.instance.updateKeyFiltering(true);
+        }
     }
 
     @Override
@@ -1070,7 +1192,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onStop() {
+        if (KeyInterceptorService.instance != null) {
+            KeyInterceptorService.instance.updateKeyFiltering(false);
+        }
+
         super.onStop();
+
+        gpuCompositionTickerRunning = false;
+        Choreographer.getInstance().removeFrameCallback(forceGpuCompositionTick);
 
         SpinnerDialog.closeDialogs(this);
         Dialog.closeDialogs();
@@ -1296,12 +1425,38 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return modifier;
     }
 
+    public boolean isInputGrabbed() {
+        return grabbedInput;
+    }
+
+    public boolean isSessionActive() {
+        return grabbedInput && conn != null && connected;
+    }
+
+    public void handleAccessibilityKeyEvent(KeyEvent event) {
+        if (!isSessionActive()) {
+            return;
+        }
+
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            handleKeyDown(event);
+        }
+        else if (event.getAction() == KeyEvent.ACTION_UP) {
+            handleKeyUp(event);
+        }
+    }
+
     private byte getModifierState() {
         return (byte) modifierFlags;
     }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (KeyInterceptorService.isServiceRunning && prefConfig.keyboardInterceptor &&
+                (event.getSource() & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD) {
+            return true;
+        }
+
         return handleKeyDown(event) || super.onKeyDown(keyCode, event);
     }
 
@@ -1323,7 +1478,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // Send the right mouse button event if mouse back and forward
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
-            if (!prefConfig.mouseNavButtons) {
+            if (!prefConfig.mouseNavButtons && conn != null) {
                 conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
             }
 
@@ -1363,7 +1518,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // UTF-8 events don't auto-repeat on the host side.
                 int unicodeChar = event.getUnicodeChar();
                 if ((unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0) {
-                    conn.sendUtf8Text(""+(char)unicodeChar);
+                    if (conn != null) {
+                        conn.sendUtf8Text(""+(char)unicodeChar);
+                    }
                     return true;
                 }
 
@@ -1375,8 +1532,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return true;
             }
 
-            conn.sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
-                    keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+            if (conn != null) {
+                conn.sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
+                        keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+            }
         }
 
         return true;
@@ -1384,6 +1543,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (KeyInterceptorService.isServiceRunning && prefConfig.keyboardInterceptor &&
+                (event.getSource() & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD) {
+            return true;
+        }
+
         return handleKeyUp(event) || super.onKeyUp(keyCode, event);
     }
 
@@ -1404,7 +1568,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // Send the right mouse button event if mouse back and forward
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
-            if (!prefConfig.mouseNavButtons) {
+            if (!prefConfig.mouseNavButtons && conn != null) {
                 conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
             }
 
@@ -1439,8 +1603,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return (unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0;
             }
 
-            conn.sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
-                    keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+            if (conn != null) {
+                conn.sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
+                        keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+            }
         }
 
         return true;
@@ -2210,6 +2376,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (connecting || connected) {
             connecting = connected = false;
             updatePipAutoEnter();
+            updateGpuCompositionTickerState();
 
             controllerHandler.stop();
 
@@ -2395,6 +2562,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 connected = true;
                 connecting = false;
                 updatePipAutoEnter();
+                updateGpuCompositionTickerState();
 
                 // Hide the mouse cursor now after a short delay.
                 // Doing it before dismissing the spinner seems to be undone
@@ -2641,7 +2809,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                performanceOverlayView.setText(text);
+                if (prefConfig.enablePerfOverlayMini) {
+                    performanceOverlayMiniView.setText(text);
+                }
+                else {
+                    performanceOverlayView.setText(text);
+                }
             }
         });
     }
