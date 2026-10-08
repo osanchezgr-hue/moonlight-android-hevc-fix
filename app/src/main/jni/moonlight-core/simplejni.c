@@ -11,6 +11,11 @@
 #include "controller_list.h"
 
 JNIEXPORT void JNICALL
+Java_com_limelight_nvstream_jni_MoonBridge_requestIdrFrame(JNIEnv *env, jclass clazz) {
+    LiRequestIdrFrame();
+}
+
+JNIEXPORT void JNICALL
 Java_com_limelight_nvstream_jni_MoonBridge_sendMouseMove(JNIEnv *env, jclass clazz, jshort deltaX, jshort deltaY) {
     LiSendMouseMoveEvent(deltaX, deltaY);
 }

@@ -352,6 +352,8 @@ public class MoonBridge {
 
     public static native void interruptConnection();
 
+    public static native void requestIdrFrame();
+
     public static native void sendMouseMove(short deltaX, short deltaY);
 
     public static native void sendMousePosition(short x, short y, short referenceWidth, short referenceHeight);

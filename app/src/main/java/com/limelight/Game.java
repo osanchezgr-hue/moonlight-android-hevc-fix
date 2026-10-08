@@ -136,6 +136,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean cursorVisible = false;
     private boolean waitingForAllModifiersUp = false;
     private int specialKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+    private boolean manualIdrKeyDown = false;
     private StreamView streamView;
     private long lastAbsTouchUpTime = 0;
     private long lastAbsTouchDownTime = 0;
@@ -1308,6 +1309,32 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return false;
     }
 
+    private boolean handleManualIdrKey(int keyCode, boolean down, boolean repeat, byte modifiers) {
+        if (keyCode != KeyEvent.KEYCODE_I) {
+            return false;
+        }
+
+        // Consume the entire I press even if Ctrl/Alt are released first.
+        // Modifier events keep their normal path, including host key-up events.
+        if (manualIdrKeyDown) {
+            if (!down) {
+                manualIdrKeyDown = false;
+            }
+            return true;
+        }
+
+        if (down && !repeat && !waitingForAllModifiersUp && isSessionActive() &&
+                modifiers == (KeyboardPacket.MODIFIER_CTRL | KeyboardPacket.MODIFIER_ALT)) {
+            manualIdrKeyDown = true;
+            LimeLog.info("Manual IDR request triggered");
+            MoonBridge.requestIdrFrame();
+            LimeLog.info("LiRequestIdrFrame() invoked");
+            return true;
+        }
+
+        return false;
+    }
+
     // We cannot simply use modifierFlags for all key event processing, because
     // some IMEs will not generate real key events for pressing Shift. Instead
     // they will simply send key events with isShiftPressed() returning true,
@@ -1420,6 +1447,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Try the keyboard handler if it wasn't handled as a game controller
         if (!handled) {
+            if (handleManualIdrKey(event.getKeyCode(), true, event.getRepeatCount() > 0, getModifierState(event))) {
+                return true;
+            }
+
             // Let this method take duplicate key down events
             if (handleSpecialKeys(event.getKeyCode(), true)) {
                 return true;
@@ -1509,6 +1540,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Try the keyboard handler if it wasn't handled as a game controller
         if (!handled) {
+            if (handleManualIdrKey(event.getKeyCode(), false, false, getModifierState(event))) {
+                return true;
+            }
+
             if (handleSpecialKeys(event.getKeyCode(), false)) {
                 return true;
             }
@@ -2301,6 +2336,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             modifierFlags = 0;
             waitingForAllModifiersUp = false;
             specialKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+            manualIdrKeyDown = false;
             updatePipAutoEnter();
 
             controllerHandler.stop();
@@ -2698,6 +2734,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void keyboardEvent(boolean buttonDown, short keyCode) {
         short keyMap = keyboardTranslator.translate(keyCode, -1);
         if (keyMap != 0) {
+            if (handleManualIdrKey(keyCode, buttonDown, false, getModifierState())) {
+                return;
+            }
+
             // handleSpecialKeys() takes the Android keycode
             if (handleSpecialKeys(keyCode, buttonDown)) {
                 return;
