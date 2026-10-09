@@ -2,6 +2,11 @@ name: Build pipeline instrumentation diagnostic APK
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - diag/pipeline-instrumentation
+    paths:
+      - .github/workflows/build-pipeline-diagnostic.yml
 
 permissions:
   contents: read
