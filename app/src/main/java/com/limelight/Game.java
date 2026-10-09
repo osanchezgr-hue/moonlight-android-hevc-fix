@@ -60,6 +60,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.util.Rational;
 import android.view.Display;
 import android.view.InputDevice;
@@ -137,6 +138,73 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean waitingForAllModifiersUp = false;
     private int specialKeyCode = KeyEvent.KEYCODE_UNKNOWN;
     private boolean manualIdrKeyDown = false;
+
+    // Diagnostic watchdog: request one IDR only when video continues arriving
+    // but rendered-frame progress has stopped for a sustained interval.
+    private static final long VIDEO_STALL_WATCHDOG_INTERVAL_MS = 500;
+    private static final long VIDEO_STALL_THRESHOLD_MS = 2000;
+    private static final long VIDEO_STALL_START_GRACE_MS = 5000;
+    private final Handler videoStallWatchdogHandler = new Handler();
+    private long watchdogLastFramesReceived = -1;
+    private long watchdogLastFramesRendered = -1;
+    private long watchdogStallStartMs;
+    private boolean watchdogIdrRequested;
+
+    private final Runnable videoStallWatchdogRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!connected || decoderRenderer == null) {
+                resetVideoStallWatchdogState();
+                return;
+            }
+
+            long framesReceived = decoderRenderer.getWatchdogFramesReceived();
+            long framesRendered = decoderRenderer.getWatchdogFramesRendered();
+            long now = SystemClock.uptimeMillis();
+
+            if (watchdogLastFramesReceived < 0 || watchdogLastFramesRendered < 0) {
+                watchdogLastFramesReceived = framesReceived;
+                watchdogLastFramesRendered = framesRendered;
+            }
+            else {
+                boolean receiveProgress = framesReceived != watchdogLastFramesReceived;
+                boolean renderProgress = framesRendered != watchdogLastFramesRendered;
+
+                if (renderProgress) {
+                    if (watchdogIdrRequested) {
+                        LimeLog.info("Video stall watchdog observed render recovery");
+                    }
+                    watchdogStallStartMs = 0;
+                    watchdogIdrRequested = false;
+                }
+                else if (receiveProgress && !watchdogIdrRequested) {
+                    if (watchdogStallStartMs == 0) {
+                        watchdogStallStartMs = now;
+                    }
+                    else if (now - watchdogStallStartMs >= VIDEO_STALL_THRESHOLD_MS) {
+                        LimeLog.warning("Video stall watchdog requesting IDR: received=" +
+                                framesReceived + ", rendered=" + framesRendered +
+                                ", stalledMs=" + (now - watchdogStallStartMs));
+                        MoonBridge.requestIdrFrame();
+                        watchdogIdrRequested = true;
+                        LimeLog.info("Video stall watchdog LiRequestIdrFrame() invoked");
+                    }
+                }
+                else if (!receiveProgress && !watchdogIdrRequested) {
+                    // Do not treat missing video traffic as a decoder/render stall.
+                    watchdogStallStartMs = 0;
+                }
+
+                watchdogLastFramesReceived = framesReceived;
+                watchdogLastFramesRendered = framesRendered;
+            }
+
+            if (connected) {
+                videoStallWatchdogHandler.postDelayed(this, VIDEO_STALL_WATCHDOG_INTERVAL_MS);
+            }
+        }
+    };
+
     private StreamView streamView;
     private long lastAbsTouchUpTime = 0;
     private long lastAbsTouchDownTime = 0;
@@ -1032,6 +1100,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        stopVideoStallWatchdog();
+
         if (KeyInterceptorService.instance != null) {
             KeyInterceptorService.instance.updateKeyFiltering(false);
         }
@@ -1307,6 +1377,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Not a special combo
         return false;
+    }
+
+    private void resetVideoStallWatchdogState() {
+        watchdogLastFramesReceived = -1;
+        watchdogLastFramesRendered = -1;
+        watchdogStallStartMs = 0;
+        watchdogIdrRequested = false;
+    }
+
+    private void startVideoStallWatchdog() {
+        videoStallWatchdogHandler.removeCallbacks(videoStallWatchdogRunnable);
+        resetVideoStallWatchdogState();
+        LimeLog.info("Video stall watchdog armed");
+        videoStallWatchdogHandler.postDelayed(videoStallWatchdogRunnable, VIDEO_STALL_START_GRACE_MS);
+    }
+
+    private void stopVideoStallWatchdog() {
+        videoStallWatchdogHandler.removeCallbacks(videoStallWatchdogRunnable);
+        resetVideoStallWatchdogState();
     }
 
     private boolean handleManualIdrKey(int keyCode, boolean down, boolean repeat, byte modifiers) {
@@ -2332,6 +2421,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void stopConnection() {
         if (connecting || connected) {
+            stopVideoStallWatchdog();
             connecting = connected = false;
             modifierFlags = 0;
             waitingForAllModifiersUp = false;
@@ -2523,6 +2613,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 connected = true;
                 connecting = false;
                 updatePipAutoEnter();
+                startVideoStallWatchdog();
 
                 // Hide the mouse cursor now after a short delay.
                 // Doing it before dismissing the spinner seems to be undone

@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.jcodec.codecs.h264.H264Utils;
 import org.jcodec.codecs.h264.io.model.SeqParameterSet;
@@ -127,6 +128,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private int numVpsIn;
     private int numFramesIn;
     private int numFramesOut;
+
+    // Monotonic counters used only by the diagnostic video-stall watchdog.
+    private final AtomicLong watchdogFramesReceived = new AtomicLong();
+    private final AtomicLong watchdogFramesRendered = new AtomicLong();
 
     private MediaCodecInfo findAvcDecoder() {
         MediaCodecInfo decoder = MediaCodecHelper.findProbableSafeDecoder("video/avc", MediaCodecInfo.CodecProfileLevel.AVCProfileHigh);
@@ -1003,6 +1008,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
                     lastRenderedFrameTimeNanos = frameTimeNanos;
                     activeWindowVideoStats.totalFramesRendered++;
+                    watchdogFramesRendered.incrementAndGet();
                 } catch (IllegalStateException ignored) {
                     try {
                         // Try to avoid leaking the output buffer by releasing it without rendering
@@ -1095,6 +1101,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                                 }
 
                                 activeWindowVideoStats.totalFramesRendered++;
+                                watchdogFramesRendered.incrementAndGet();
                             }
                             else {
                                 // For balanced frame pacing case, the Choreographer callback will handle rendering.
@@ -1690,6 +1697,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         activeWindowVideoStats.totalFramesReceived++;
         activeWindowVideoStats.totalFrames++;
+        watchdogFramesReceived.incrementAndGet();
 
         if (!FRAME_RENDER_TIME_ONLY) {
             // Count time from first packet received to enqueue time as receive time
@@ -1801,6 +1809,14 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
 
         return capabilities;
+    }
+
+    public long getWatchdogFramesReceived() {
+        return watchdogFramesReceived.get();
+    }
+
+    public long getWatchdogFramesRendered() {
+        return watchdogFramesRendered.get();
     }
 
     public int getAverageEndToEndLatency() {
