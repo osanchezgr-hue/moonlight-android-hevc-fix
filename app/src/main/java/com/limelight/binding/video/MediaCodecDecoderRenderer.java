@@ -344,6 +344,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         });
     }
 
+    @TargetApi(Build.VERSION_CODES.M)
     private void installPipelineFrameListener(final VideoPipelineDiagnostics.Epoch epoch) {
         if (!pipelineDiagnostics.isCurrent(epoch)) return;
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {

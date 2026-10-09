@@ -151,7 +151,16 @@ jobs:
           ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/moonlight-hevc-keys.p12
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-        run: ./gradlew ":app:$LINT_TASK" --no-daemon --stacktrace
+        run: |
+          lint_exit=0
+          ./gradlew ":app:$LINT_TASK" --no-daemon --stacktrace || lint_exit=$?
+          if [ "$lint_exit" -ne 0 ]; then
+            lint_report="app/build/intermediates/lint_intermediate_text_report/nonRootDebug/lintReportNonRootDebug/lint-results-nonRootDebug.txt"
+            if [ -f "$lint_report" ]; then
+              cat "$lint_report" || true
+            fi
+          fi
+          exit "$lint_exit"
 
       - name: Run nonRootDebug unit tests if available
         if: ${{ steps.tasks.outputs.tests != '' }}
