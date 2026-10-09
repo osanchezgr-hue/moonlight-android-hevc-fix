@@ -39,6 +39,8 @@ import android.view.SurfaceHolder;
 
 public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements Choreographer.FrameCallback {
 
+    private final VideoPipelineDiagnostics pipelineDiagnostics = new VideoPipelineDiagnostics();
+
     private static final boolean USE_FRAME_RENDER_TIME = false;
     private static final boolean FRAME_RENDER_TIME_ONLY = USE_FRAME_RENDER_TIME && false;
 
@@ -292,6 +294,95 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     public void setRenderTarget(SurfaceHolder renderTarget) {
         this.renderTarget = renderTarget;
+        pipelineDiagnostics.observeSurface(renderTarget.getSurface());
+    }
+
+    public void notePipelineSurfaceEvent(String event) {
+        pipelineDiagnostics.surfaceEvent(event);
+    }
+
+    public VideoPipelineDiagnostics.Episode beginPipelineIdrEpisode() {
+        VideoPipelineDiagnostics.Episode episode = pipelineDiagnostics.beginEpisode();
+        logPipelineSnapshot(episode, 0, "PIPELINE SNAPSHOT PRE-IDR");
+        return episode;
+    }
+
+    private void logPipelineSnapshot(VideoPipelineDiagnostics.Episode episode, int snapshotId, String label) {
+        if (!pipelineDiagnostics.valid(episode) || stopping) return;
+        try {
+            // Only PRE (on the manual hotkey path) queries native session state.
+            // POST never calls a global JNI getter, eliminating the invalidation/read race.
+            if (snapshotId == 0 && pipelineDiagnostics.valid(episode) && !stopping) {
+                try {
+                    episode.pendingNativeFramesAtPre = MoonBridge.getPendingVideoFrames();
+                    episode.nativePendingSource = "PRE";
+                } catch (RuntimeException | LinkageError e) {
+                    episode.pendingNativeFramesAtPre = null;
+                    episode.nativePendingSource = "PRE_QUERY_FAILED";
+                    pipelineDiagnostics.error(e);
+                }
+            }
+            if (!pipelineDiagnostics.valid(episode) || stopping) return;
+            pipelineDiagnostics.logSnapshot(episode, snapshotId, label, stopping,
+                    codecRecoveryType.get(), prefs.framePacing, outputBufferQueue.size());
+        } catch (RuntimeException e) {
+            pipelineDiagnostics.error(e);
+        }
+    }
+
+    public void schedulePostIdrSnapshots(final VideoPipelineDiagnostics.Episode episode) {
+        pipelineDiagnostics.postSnapshots(episode, new Runnable() {
+            @Override public void run() {
+                pipelineDiagnostics.observerHeartbeat();
+                logPipelineSnapshot(episode, 1, "PIPELINE SNAPSHOT POST-IDR +500ms");
+            }
+        }, new Runnable() {
+            @Override public void run() {
+                pipelineDiagnostics.observerHeartbeat();
+                logPipelineSnapshot(episode, 2, "PIPELINE SNAPSHOT POST-IDR +2000ms");
+            }
+        });
+    }
+
+    private void installPipelineFrameListener(final VideoPipelineDiagnostics.Epoch epoch) {
+        if (!pipelineDiagnostics.isCurrent(epoch)) return;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            epoch.listener = "unsupported-api";
+            return;
+        }
+        final MediaCodec diagnosticCodec = videoDecoder;
+        epoch.listener = "waiting-for-explicit-handler";
+        // Serialize diagnostic installations on the observer Looper. An old task cannot
+        // overwrite a newer installation, and it never follows the mutable codec field.
+        pipelineDiagnostics.whenObserverReady(new Runnable() {
+            @Override public void run() {
+                if (!pipelineDiagnostics.isCurrent(epoch)) return;
+                Handler handler = pipelineDiagnostics.observerHandler();
+                if (handler == null) {
+                    epoch.listener = "handler-unavailable";
+                    return;
+                }
+                try {
+                    // Observer effect: callbacks per frame, without per-frame logging.
+                    // The only installation site also preserves the optional functional calculation.
+                    diagnosticCodec.setOnFrameRenderedListener(new MediaCodec.OnFrameRenderedListener() {
+                        @Override public void onFrameRendered(MediaCodec codec, long presentationTimeUs, long renderTimeNanos) {
+                            pipelineDiagnostics.codecFrameRenderedCallback(epoch, presentationTimeUs, renderTimeNanos);
+                            if (USE_FRAME_RENDER_TIME) {
+                                long delta = (renderTimeNanos / 1000000L) - (presentationTimeUs / 1000);
+                                if (delta >= 0 && delta < 1000) {
+                                    activeWindowVideoStats.totalTimeMs += delta;
+                                }
+                            }
+                        }
+                    }, handler);
+                    epoch.listener = "registered";
+                } catch (RuntimeException e) {
+                    epoch.listener = "registration-failed";
+                    pipelineDiagnostics.error(e);
+                }
+            }
+        });
     }
 
     public MediaCodecDecoderRenderer(Activity activity, PreferenceConfiguration prefs,
@@ -557,6 +648,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         // Start the decoder
         videoDecoder.start();
+        installPipelineFrameListener(pipelineDiagnostics.activateEpoch("started"));
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             legacyInputBuffers = videoDecoder.getInputBuffers();
@@ -587,7 +679,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             }
         } finally {
             if (!configured && videoDecoder != null) {
+                pipelineDiagnostics.beginTransition("releasing");
                 videoDecoder.release();
+                pipelineDiagnostics.codecOperation("released");
                 videoDecoder = null;
             }
         }
@@ -683,19 +777,6 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             }
         }
 
-        if (USE_FRAME_RENDER_TIME && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            videoDecoder.setOnFrameRenderedListener(new MediaCodec.OnFrameRenderedListener() {
-                @Override
-                public void onFrameRendered(MediaCodec mediaCodec, long presentationTimeUs, long renderTimeNanos) {
-                    long delta = (renderTimeNanos / 1000000L) - (presentationTimeUs / 1000);
-                    if (delta >= 0 && delta < 1000) {
-                        if (USE_FRAME_RENDER_TIME) {
-                            activeWindowVideoStats.totalTimeMs += delta;
-                        }
-                    }
-                }
-            }, null);
-        }
 
         return 0;
     }
@@ -739,7 +820,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 if (codecRecoveryType.get() == CR_RECOVERY_TYPE_FLUSH) {
                     LimeLog.warning("Flushing decoder");
                     try {
+                        pipelineDiagnostics.beginTransition("flushing");
                         videoDecoder.flush();
+                        installPipelineFrameListener(pipelineDiagnostics.activateEpoch("flushed"));
                         codecRecoveryType.set(CR_RECOVERY_TYPE_NONE);
                     } catch (IllegalStateException e) {
                         e.printStackTrace();
@@ -760,7 +843,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 if (codecRecoveryType.get() == CR_RECOVERY_TYPE_RESTART) {
                     LimeLog.warning("Trying to restart decoder after CodecException");
                     try {
+                        pipelineDiagnostics.beginTransition("stopping-codec");
                         videoDecoder.stop();
+                        pipelineDiagnostics.codecOperation("stopped");
                         configureAndStartDecoder(configuredFormat);
                         codecRecoveryType.set(CR_RECOVERY_TYPE_NONE);
                     } catch (IllegalArgumentException e) {
@@ -783,7 +868,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 if (codecRecoveryType.get() == CR_RECOVERY_TYPE_RESET && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     LimeLog.warning("Trying to reset decoder after CodecException");
                     try {
+                        pipelineDiagnostics.beginTransition("resetting");
                         videoDecoder.reset();
+                        pipelineDiagnostics.codecOperation("reset");
                         configureAndStartDecoder(configuredFormat);
                         codecRecoveryType.set(CR_RECOVERY_TYPE_NONE);
                     } catch (IllegalArgumentException e) {
@@ -804,7 +891,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 // throw away the old decoder and reinitialize a new one from scratch.
                 if (codecRecoveryType.get() == CR_RECOVERY_TYPE_RESET) {
                     LimeLog.warning("Trying to recreate decoder after CodecException");
+                    pipelineDiagnostics.beginTransition("releasing");
                     videoDecoder.release();
+                    pipelineDiagnostics.codecOperation("released");
 
                     try {
                         int err = initializeDecoder(true);
@@ -858,6 +947,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     // Returns true if the exception is transient
     private boolean handleDecoderException(IllegalStateException e) {
+        pipelineDiagnostics.error(e);
         // Eat decoder exceptions if we're in the process of stopping
         if (stopping) {
             return false;
@@ -972,6 +1062,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     @Override
     public void doFrame(long frameTimeNanos) {
+        pipelineDiagnostics.choreographerHeartbeat();
         // Do nothing if we're stopping
         if (stopping) {
             return;
@@ -993,6 +1084,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             // frame of buffer to smooth over network/rendering jitter.
             Integer nextOutputBuffer = outputBufferQueue.poll();
             if (nextOutputBuffer != null) {
+                final VideoPipelineDiagnostics.Output diagnosticOutput = pipelineDiagnostics.ownership(nextOutputBuffer);
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                         videoDecoder.releaseOutputBuffer(nextOutputBuffer, frameTimeNanos);
@@ -1001,12 +1093,15 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                         videoDecoder.releaseOutputBuffer(nextOutputBuffer, true);
                     }
 
+                    pipelineDiagnostics.outputReleased(nextOutputBuffer, diagnosticOutput, true);
                     lastRenderedFrameTimeNanos = frameTimeNanos;
                     activeWindowVideoStats.totalFramesRendered++;
                 } catch (IllegalStateException ignored) {
+                    pipelineDiagnostics.error(ignored);
                     try {
                         // Try to avoid leaking the output buffer by releasing it without rendering
                         videoDecoder.releaseOutputBuffer(nextOutputBuffer, false);
+                        pipelineDiagnostics.outputReleased(nextOutputBuffer, diagnosticOutput, false);
                     } catch (IllegalStateException e) {
                         // This will leak nextOutputBuffer, but there's really nothing else we can do
                         e.printStackTrace();
@@ -1051,20 +1146,29 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             public void run() {
                 BufferInfo info = new BufferInfo();
                 while (!stopping) {
+                    pipelineDiagnostics.rendererHeartbeat();
                     try {
                         // Try to output a frame
+                        final VideoPipelineDiagnostics.Epoch diagnosticEpoch = pipelineDiagnostics.epoch();
                         int outIndex = videoDecoder.dequeueOutputBuffer(info, 50000);
+                        pipelineDiagnostics.mainDequeueResult(diagnosticEpoch, outIndex);
                         if (outIndex >= 0) {
                             long presentationTimeUs = info.presentationTimeUs;
                             int lastIndex = outIndex;
 
+                            VideoPipelineDiagnostics.Output diagnosticOutput =
+                                    pipelineDiagnostics.outputDequeued(diagnosticEpoch, outIndex, presentationTimeUs);
                             numFramesOut++;
 
                             // Render the latest frame now if frame pacing isn't in balanced mode
                             if (prefs.framePacing != PreferenceConfiguration.FRAME_PACING_BALANCED) {
                                 // Get the last output buffer in the queue
                                 while ((outIndex = videoDecoder.dequeueOutputBuffer(info, 0)) >= 0) {
+                                    VideoPipelineDiagnostics.Output nextDiagnosticOutput =
+                                            pipelineDiagnostics.outputDequeued(diagnosticEpoch, outIndex, info.presentationTimeUs);
                                     videoDecoder.releaseOutputBuffer(lastIndex, false);
+                                    pipelineDiagnostics.outputReleased(lastIndex, diagnosticOutput, false);
+                                    diagnosticOutput = nextDiagnosticOutput;
 
                                     numFramesOut++;
 
@@ -1094,6 +1198,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                                     }
                                 }
 
+                                pipelineDiagnostics.outputReleased(lastIndex, diagnosticOutput, true);
                                 activeWindowVideoStats.totalFramesRendered++;
                             }
                             else {
@@ -1107,7 +1212,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                                 // refresh rate).
                                 if (outputBufferQueue.size() == OUTPUT_BUFFER_QUEUE_LIMIT) {
                                     try {
-                                        videoDecoder.releaseOutputBuffer(outputBufferQueue.take(), false);
+                                        // Preserve the same take() and released index; capture ownership before release.
+                                        int discardedIndex = outputBufferQueue.take();
+                                        VideoPipelineDiagnostics.Output discardedOutput = pipelineDiagnostics.ownership(discardedIndex);
+                                        videoDecoder.releaseOutputBuffer(discardedIndex, false);
+                                        pipelineDiagnostics.outputReleased(discardedIndex, discardedOutput, false);
                                     } catch (InterruptedException e) {
                                         // We're shutting down, so we can just drop this buffer on the floor
                                         // and it will be reclaimed when the codec is released.
@@ -1167,7 +1276,12 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         try {
             // If we don't have an input buffer index yet, fetch one now
             while (nextInputBufferIndex < 0 && !stopping) {
-                nextInputBufferIndex = videoDecoder.dequeueInputBuffer(10000);
+                pipelineDiagnostics.inputWaitEntered();
+                try {
+                    nextInputBufferIndex = videoDecoder.dequeueInputBuffer(10000);
+                } finally {
+                    pipelineDiagnostics.inputWaitExited();
+                }
             }
 
             // Get the backing ByteBuffer for the input buffer index
@@ -1235,6 +1349,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     // !!! May be called even if setup()/start() fails !!!
     public void prepareForStop() {
+        // Invalidate episodes before session teardown, not only at cleanup.
+        pipelineDiagnostics.close();
         // Let the decoding code know to ignore codec exceptions now
         stopping = true;
 
@@ -1298,7 +1414,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     @Override
     public void cleanup() {
+        pipelineDiagnostics.close();
+        pipelineDiagnostics.beginTransition("releasing");
         videoDecoder.release();
+        pipelineDiagnostics.codecOperation("released");
     }
 
     @Override
@@ -1331,13 +1450,15 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
     }
 
-    private boolean queueNextInputBuffer(long timestampUs, int codecFlags) {
+    private boolean queueNextInputBuffer(long timestampUs, int codecFlags, boolean diagnosticCodecConfig) {
         boolean codecRecovered;
 
         try {
+            final VideoPipelineDiagnostics.Epoch diagnosticEpoch = pipelineDiagnostics.epoch();
             videoDecoder.queueInputBuffer(nextInputBufferIndex,
                     0, nextInputBuffer.position(),
                     timestampUs, codecFlags);
+            pipelineDiagnostics.inputAccepted(diagnosticEpoch, timestampUs, diagnosticCodecConfig);
 
             // We need a new buffer now
             nextInputBufferIndex = -1;
@@ -1397,9 +1518,27 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     public int submitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
                                 int frameNumber, int frameType, char frameHostProcessingLatency,
                                 long receiveTimeMs, long enqueueTimeMs) {
+        pipelineDiagnostics.submitEntered();
+        try {
+            return submitDecodeUnitObserved(decodeUnitData, decodeUnitLength, decodeUnitType,
+                    frameNumber, frameType, frameHostProcessingLatency, receiveTimeMs, enqueueTimeMs);
+        } finally {
+            pipelineDiagnostics.submitExited();
+        }
+    }
+
+    private int submitDecodeUnitObserved(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
+                                         int frameNumber, int frameType, char frameHostProcessingLatency,
+                                         long receiveTimeMs, long enqueueTimeMs) {
         if (stopping) {
             // Don't bother if we're stopping
             return MoonBridge.DR_OK;
+        }
+
+        // Only processable PICDATA, not the separate parameter-set JNI submissions.
+        if (decodeUnitType == MoonBridge.BUFFER_TYPE_PICDATA) {
+            pipelineDiagnostics.completeFrame(pipelineDiagnostics.epoch(), frameNumber, frameType,
+                    receiveTimeMs, enqueueTimeMs);
         }
 
         if (lastFrameNumber == 0) {
@@ -1653,7 +1792,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                         nextInputBuffer.put(ppsBuffer);
                     }
 
-                    if (!queueNextInputBuffer(0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) {
+                    if (!queueNextInputBuffer(0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG, true)) {
                         return MoonBridge.DR_NEED_IDR;
                     }
 
@@ -1744,7 +1883,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         // Copy data from our buffer list into the input buffer
         nextInputBuffer.put(decodeUnitData, 0, decodeUnitLength);
 
-        if (!queueNextInputBuffer(timestampUs, codecFlags)) {
+        if (!queueNextInputBuffer(timestampUs, codecFlags, false)) {
             return MoonBridge.DR_NEED_IDR;
         }
 
@@ -1774,7 +1913,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         savedSps = null;
 
         // Queue the new SPS
-        return queueNextInputBuffer(0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG);
+        return queueNextInputBuffer(0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG, true);
     }
 
     @Override

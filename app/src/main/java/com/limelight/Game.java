@@ -1327,8 +1327,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 modifiers == (KeyboardPacket.MODIFIER_CTRL | KeyboardPacket.MODIFIER_ALT)) {
             manualIdrKeyDown = true;
             LimeLog.info("Manual IDR request triggered");
+            final com.limelight.binding.video.VideoPipelineDiagnostics.Episode diagnosticEpisode =
+                    decoderRenderer.beginPipelineIdrEpisode();
             MoonBridge.requestIdrFrame();
             LimeLog.info("LiRequestIdrFrame() invoked");
+            decoderRenderer.schedulePostIdrSnapshots(diagnosticEpisode);
             return true;
         }
 
@@ -2613,6 +2616,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        if (decoderRenderer != null) {
+            decoderRenderer.notePipelineSurfaceEvent("changed");
+        }
         if (!surfaceCreated) {
             throw new IllegalStateException("Surface changed before creation!");
         }
@@ -2631,6 +2637,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
+        if (decoderRenderer != null) {
+            decoderRenderer.notePipelineSurfaceEvent("created");
+        }
         float desiredFrameRate;
 
         surfaceCreated = true;
@@ -2667,6 +2676,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
+        if (decoderRenderer != null) {
+            decoderRenderer.notePipelineSurfaceEvent("destroyed");
+        }
         if (!surfaceCreated) {
             throw new IllegalStateException("Surface destroyed before creation!");
         }

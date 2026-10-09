@@ -1,0 +1,176 @@
+name: Build pipeline instrumentation diagnostic APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Verify diagnostic branch and authorized changes
+        shell: bash
+        env:
+          DIAGNOSTIC_REF: ${{ github.ref }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          base = '38f3c04b894127ea494e1b40efa2b9db6ad5bdb7'
+          require(os.environ['DIAGNOSTIC_REF'] == 'refs/heads/diag/pipeline-instrumentation',
+                  'This workflow requires diag/pipeline-instrumentation')
+          subprocess.run(['git', 'merge-base', '--is-ancestor', base, 'HEAD'], check=True)
+          allowed = {
+              'app/src/main/java/com/limelight/Game.java',
+              'app/src/main/java/com/limelight/binding/video/MediaCodecDecoderRenderer.java',
+              'app/src/main/java/com/limelight/binding/video/VideoPipelineDiagnostics.java',
+              '.github/workflows/build-pipeline-diagnostic.yml',
+          }
+          changed = set(filter(None, subprocess.check_output([
+              'git', 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD'
+          ]).decode().split('\0')))
+          require(changed == allowed,
+                  'Changed paths must match exactly; missing: ' + repr(sorted(allowed - changed)) +
+                  '; unauthorized: ' + repr(sorted(changed - allowed)))
+          helper = 'app/src/main/java/com/limelight/binding/video/MediaCodecHelper.java'
+          helper_hash = subprocess.check_output(['git', 'hash-object', helper], text=True).strip()
+          require(helper_hash == '6e1dd6ce6162eb45d539708e08e87d5664fd20e3',
+                  'MediaCodecHelper differs from the protected blob')
+          stable = '.github/workflows/build-apk.yml'
+          require(Path(stable).read_bytes() == subprocess.check_output(['git', 'show', base + ':' + stable]),
+                  'Stable workflow must remain byte-identical')
+          renderer = Path('app/src/main/java/com/limelight/binding/video/MediaCodecDecoderRenderer.java').read_text()
+          require('private static final boolean USE_FRAME_RENDER_TIME = false;' in renderer,
+                  'Expected USE_FRAME_RENDER_TIME = false declaration is missing')
+          for marker in ('installPipelineFrameListener', 'PIPELINE SNAPSHOT PRE-IDR',
+                         'PIPELINE SNAPSHOT POST-IDR +500ms', 'PIPELINE SNAPSHOT POST-IDR +2000ms'):
+              require(marker in renderer, 'Renderer instrumentation marker missing: ' + marker)
+          diagnostics = Path('app/src/main/java/com/limelight/binding/video/VideoPipelineDiagnostics.java')
+          require(diagnostics.is_file() and 'public final class VideoPipelineDiagnostics' in diagnostics.read_text(),
+                  'VideoPipelineDiagnostics is missing')
+          for marker in ('codecFrameRenderedCallback', 'acceptedPictureInputs', 'codecEpochPre', 'episodeId'):
+              require(marker in diagnostics.read_text(), 'Diagnostics instrumentation marker missing: ' + marker)
+          game = Path('app/src/main/java/com/limelight/Game.java').read_text()
+          for marker in ('manualIdrKeyDown', 'Manual IDR request triggered', 'MoonBridge.requestIdrFrame();'):
+              require(marker in game, 'Manual IDR marker missing: ' + marker)
+          for marker in ('beginPipelineIdrEpisode()', 'schedulePostIdrSnapshots'):
+              require(marker in game, 'Game instrumentation marker missing: ' + marker)
+          print('Diagnostic guards passed; source markers are presence checks, not behavioral proofs.')
+          PY
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Locate Android SDK manager and install packages
+        shell: bash
+        run: |
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          test -n "$SDKMANAGER" || { echo "sdkmanager not found under $ANDROID_HOME/cmdline-tools"; exit 1; }
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
+
+      - name: Restore persistent signing keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "Missing ANDROID_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo "Missing ANDROID_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$ANDROID_KEY_ALIAS" || { echo "Missing ANDROID_KEY_ALIAS secret"; exit 1; }
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/moonlight-hevc-keys.p12"
+          test -s "$RUNNER_TEMP/moonlight-hevc-keys.p12"
+
+      - name: Build persistently signed diagnostic APK
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/moonlight-hevc-keys.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleNonRootDebug --no-daemon --stacktrace
+
+      - name: Discover applicable lint and unit test tasks
+        id: tasks
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/moonlight-hevc-keys.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          ./gradlew :app:tasks --all --console=plain --no-daemon --stacktrace > "$RUNNER_TEMP/pipeline-gradle-tasks.txt"
+          cat "$RUNNER_TEMP/pipeline-gradle-tasks.txt"
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          report = Path(os.environ['RUNNER_TEMP'], 'pipeline-gradle-tasks.txt').read_text()
+          available = set(re.findall(r'^([A-Za-z][A-Za-z0-9_]*)\s+-\s+', report, re.MULTILINE))
+          lint = next((name for name in ('lintNonRootDebug', 'lintNonRoot', 'lintDebug', 'lint')
+                       if name in available), '')
+          tests = 'testNonRootDebugUnitTest' if 'testNonRootDebugUnitTest' in available else ''
+          if not lint:
+              raise SystemExit('No applicable lint task exposed by :app:tasks')
+          print('Selected lint task: :app:' + lint + ' (most specific available candidate)')
+          print('Selected unit test task: ' + (':app:' + tests if tests else 'none applicable to nonRootDebug'))
+          print('Other exposed test tasks: ' + repr(sorted(name for name in available if name.startswith('test'))))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('lint=' + lint + '\n')
+              output.write('tests=' + tests + '\n')
+          PY
+
+      - name: Run applicable lint
+        shell: bash
+        env:
+          LINT_TASK: ${{ steps.tasks.outputs.lint }}
+          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/moonlight-hevc-keys.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: ./gradlew ":app:$LINT_TASK" --no-daemon --stacktrace
+
+      - name: Run nonRootDebug unit tests if available
+        if: ${{ steps.tasks.outputs.tests != '' }}
+        shell: bash
+        env:
+          UNIT_TEST_TASK: ${{ steps.tasks.outputs.tests }}
+          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/moonlight-hevc-keys.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: ./gradlew ":app:$UNIT_TEST_TASK" --no-daemon --stacktrace
+
+      - name: Verify APK signature and report artifact identity
+        shell: bash
+        run: |
+          mapfile -t APKS < <(find app/build/outputs/apk/nonRoot/debug -type f -name '*.apk' | sort)
+          test "${#APKS[@]}" -eq 1 || { echo "Expected exactly one diagnostic APK"; exit 1; }
+          APK="${APKS[0]}"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$APK"
+          sha256sum "$APK"
+          stat --printf='APK size: %s bytes\n' "$APK"
+
+      - name: Upload diagnostic APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonlight-pipeline-instrumentation
+          path: app/build/outputs/apk/nonRoot/debug/*.apk
+          if-no-files-found: error
