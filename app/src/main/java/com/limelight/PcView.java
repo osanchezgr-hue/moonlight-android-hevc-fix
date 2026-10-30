@@ -3,6 +3,7 @@ package com.limelight;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.UnknownHostException;
+import java.util.Locale;
 
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.crypto.AndroidCryptoProvider;
@@ -29,6 +30,7 @@ import com.limelight.utils.ShortcutHelper;
 import com.limelight.utils.UiHelper;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.ActivityManager;
 import android.app.Service;
 import android.content.ComponentName;
@@ -40,6 +42,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.preference.PreferenceManager;
+import android.text.InputType;
 import android.view.ContextMenu;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -49,6 +52,7 @@ import android.view.View.OnClickListener;
 import android.widget.AbsListView;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemClickListener;
+import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.RelativeLayout;
 import android.widget.Toast;
@@ -119,6 +123,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     private final static int FULL_APP_LIST_ID = 9;
     private final static int TEST_NETWORK_ID = 10;
     private final static int GAMESTREAM_EOL_ID = 11;
+    private final static int WOL_MAC_ID = 12;
 
     private void initializeViews() {
         setContentView(R.layout.activity_pc_view);
@@ -382,6 +387,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         menu.add(Menu.NONE, TEST_NETWORK_ID, 5, getResources().getString(R.string.pcview_menu_test_network));
         menu.add(Menu.NONE, DELETE_ID, 6, getResources().getString(R.string.pcview_menu_delete_pc));
         menu.add(Menu.NONE, VIEW_DETAILS_ID, 7,  getResources().getString(R.string.pcview_menu_details));
+        menu.add(Menu.NONE, WOL_MAC_ID, 8, getResources().getString(R.string.pcview_menu_wol_mac));
     }
 
     @Override
@@ -497,6 +503,48 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         }).start();
     }
 
+
+    // This optional setting only affects the WOL magic packet. It never changes the
+    // IP address, stream connection, Sunshine pairing, or discovered adapter MAC.
+    private void editWolMac(ComputerDetails computer) {
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        input.setHint("AA:BB:CC:DD:EE:FF");
+
+        String savedMac = WakeOnLanSender.getMacOverride(this, computer);
+        if (savedMac != null) {
+            input.setText(savedMac);
+            input.setSelection(savedMac.length());
+        }
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.wol_mac_override_title)
+                .setMessage(R.string.wol_mac_override_explanation)
+                .setView(input)
+                .setPositiveButton(R.string.wol_mac_override_save, null)
+                .setNeutralButton(R.string.wol_mac_override_reset, (d, which) -> {
+                    WakeOnLanSender.saveMacOverride(PcView.this, computer, null);
+                    Toast.makeText(PcView.this, R.string.wol_mac_override_auto, Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+
+        dialog.setOnShowListener(ignored ->
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                    String mac = input.getText().toString().trim().toUpperCase(Locale.ROOT);
+                    if (!WakeOnLanSender.isValidMacAddress(mac)) {
+                        input.setError(getString(R.string.wol_mac_override_invalid));
+                        return;
+                    }
+
+                    WakeOnLanSender.saveMacOverride(PcView.this, computer, mac);
+                    Toast.makeText(PcView.this, R.string.wol_mac_override_saved, Toast.LENGTH_SHORT).show();
+                    dialog.dismiss();
+                }));
+        dialog.show();
+    }
+
     private void doWakeOnLan(final ComputerDetails computer) {
         if (computer.state == ComputerDetails.State.ONLINE) {
             Toast.makeText(PcView.this, getResources().getString(R.string.wol_pc_online), Toast.LENGTH_SHORT).show();
@@ -513,7 +561,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
             public void run() {
                 String message;
                 try {
-                    WakeOnLanSender.sendWolPacket(computer);
+                    WakeOnLanSender.sendWolPacket(PcView.this, computer);
                     message = getResources().getString(R.string.wol_waking_msg);
                 } catch (IOException e) {
                     message = getResources().getString(R.string.wol_fail);
@@ -615,6 +663,10 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
             case WOL_ID:
                 doWakeOnLan(computer.details);
+                return true;
+
+            case WOL_MAC_ID:
+                editWolMac(computer.details);
                 return true;
 
             case DELETE_ID:

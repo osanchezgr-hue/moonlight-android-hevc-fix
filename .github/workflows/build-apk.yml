@@ -2,7 +2,7 @@ name: Build Moonlight HEVC+Keys APK
 
 on:
   push:
-    branches: [ "hevc-keys" ]
+    branches: [ "hevc-keys", "wol-mac-override-v5-test" ]
   workflow_dispatch:
 
 jobs:
@@ -76,5 +76,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: moonlight-hevc-keys-v4
+          name: moonlight-hevc-keys-v5-woltest
           path: app/build/outputs/apk/nonRoot/debug/*.apk

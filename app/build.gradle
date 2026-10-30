@@ -11,8 +11,8 @@ android {
         minSdk 21
         targetSdk 34
 
-        versionName "12.1-hevc-keys.4"
-        versionCode = 318
+        versionName "12.1-hevc-keys.5-woltest"
+        versionCode = 319
 
         // Generate native debug symbols to allow Google Play to symbolicate our native crashes
         ndk.debugSymbolLevel = 'FULL'
@@ -98,8 +98,8 @@ android {
                 signingConfig signingConfigs.persistent
             }
 
-            applicationIdSuffix ".debug"
-            resValue "string", "app_label", "Moonlight HEVC+Keys"
+            applicationIdSuffix ".woltest"
+            resValue "string", "app_label", "Moonlight WOL TEST"
             resValue "string", "app_label_root", "Moonlight HEVC+Keys (Root)"
 
             minifyEnabled true

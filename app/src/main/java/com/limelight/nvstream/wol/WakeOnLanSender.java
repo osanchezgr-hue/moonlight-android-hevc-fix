@@ -1,6 +1,7 @@
 package com.limelight.nvstream.wol;
 
 import java.io.IOException;
+import android.content.Context;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -10,6 +11,38 @@ import com.limelight.LimeLog;
 import com.limelight.nvstream.http.ComputerDetails;
 
 public class WakeOnLanSender {
+    // Stored privately per host UUID on the Android client, never published to Sunshine.
+    private static final String WOL_MAC_PREFS = "wol_mac_overrides";
+
+    public static String getMacOverride(Context context, ComputerDetails computer) {
+        if (computer.uuid == null) {
+            return null;
+        }
+        return context.getSharedPreferences(WOL_MAC_PREFS, Context.MODE_PRIVATE)
+                .getString(computer.uuid, null);
+    }
+
+    public static void saveMacOverride(Context context, ComputerDetails computer, String mac) {
+        if (computer.uuid == null) {
+            throw new IllegalArgumentException("Cannot save WOL MAC for a PC without a UUID");
+        }
+        if (mac != null && !isValidMacAddress(mac)) {
+            throw new IllegalArgumentException("Invalid WOL MAC address");
+        }
+
+        android.content.SharedPreferences.Editor editor =
+                context.getSharedPreferences(WOL_MAC_PREFS, Context.MODE_PRIVATE).edit();
+        if (mac == null) {
+            editor.remove(computer.uuid);
+        } else {
+            editor.putString(computer.uuid, mac);
+        }
+        editor.apply();
+    }
+
+    public static boolean isValidMacAddress(String mac) {
+        return mac != null && mac.matches("(?i)([0-9a-f]{2}:){5}[0-9a-f]{2}");
+    }
     // These ports will always be tried as-is.
     private static final int[] STATIC_PORTS_TO_TRY = new int[] {
         9, // Standard WOL port (privileged port)
@@ -58,8 +91,9 @@ public class WakeOnLanSender {
         }
     }
     
-    public static void sendWolPacket(ComputerDetails computer) throws IOException {
-        byte[] payload = createWolPayload(computer);
+    public static void sendWolPacket(Context context, ComputerDetails computer) throws IOException {
+        String overriddenMac = getMacOverride(context, computer);
+        byte[] payload = createWolPayload(overriddenMac != null ? overriddenMac : computer.macAddress);
         IOException lastException = null;
         boolean sentWolPacket = false;
 
@@ -128,9 +162,9 @@ public class WakeOnLanSender {
         }
     }
     
-    private static byte[] createWolPayload(ComputerDetails computer) {
+    private static byte[] createWolPayload(String targetMac) {
         byte[] payload = new byte[102];
-        byte[] macAddress = macStringToBytes(computer.macAddress);
+        byte[] macAddress = macStringToBytes(targetMac);
         int i;
         
         // 6 bytes of FF

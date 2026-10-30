@@ -287,4 +287,13 @@
     <string name="title_seekbar_vibrate_fallback_strength">Ajustar la intensidad del ruido emulado</string>
     <string name="summary_seekbar_vibrate_fallback_strength">Amplifica o reduce la intensidad de la vibración de tu dispositivo</string>
     <string name="suffix_seekbar_vibrate_fallback_strength">%</string>
+    <!-- MAC de Wake-on-LAN por PC, guardada solo en el dispositivo Android -->
+    <string name="pcview_menu_wol_mac">Configurar MAC para WOL</string>
+    <string name="wol_mac_override_title">Dirección MAC para Wake-on-LAN</string>
+    <string name="wol_mac_override_explanation">MAC opcional para despertar este PC. No cambia la conexión, el streaming ni el descubrimiento automático.</string>
+    <string name="wol_mac_override_save">Guardar</string>
+    <string name="wol_mac_override_reset">Usar MAC automática</string>
+    <string name="wol_mac_override_invalid">Introduce una MAC como AA:BB:CC:DD:EE:FF</string>
+    <string name="wol_mac_override_saved">MAC de WOL guardada para este PC</string>
+    <string name="wol_mac_override_auto">Restaurada la MAC automática para WOL</string>
 </resources>
